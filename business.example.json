@@ -7,7 +7,7 @@
   "langues": ["français", "arabe/darija"],
   "infos_livraison": "Livraison 2-3 jours partout au Maroc, 30 DH. Gratuite dès 500 DH d'achat.",
   "informations_generales": "Boutique de vêtements pour homme et femme, basée à Rabat. Ouvert du lundi au samedi, 9h-19h.",
-  "numero_notification": "212704282999",
+  "numero_notification": "212704282919",
   "champs_commande_requis": ["article", "taille", "couleur", "quantite", "nom", "adresse", "telephone"],
   "produits": [
     {

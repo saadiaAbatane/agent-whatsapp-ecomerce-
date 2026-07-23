@@ -1,0 +1,16 @@
+{
+  "name": "whatsapp-agent-ia",
+  "version": "1.0.0",
+  "description": "Agent IA WhatsApp - webhook + Claude API",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2"
+  }
+}

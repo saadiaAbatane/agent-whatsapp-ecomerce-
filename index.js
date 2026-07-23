@@ -1,62 +1,89 @@
 import express from "express";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
-import fs from "fs";
+import FormData from "form-data";
+import { query } from "./db.js";
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
-const {
-  WHATSAPP_TOKEN,
-  WHATSAPP_PHONE_NUMBER_ID,
-  WEBHOOK_VERIFY_TOKEN,
-  GROQ_API_KEY,
-  PORT = 3000,
-} = process.env;
+const { WEBHOOK_VERIFY_TOKEN, GROQ_API_KEY, PORT = 3000 } = process.env;
 
-console.log("🔍 DEBUG - Token attendu:", JSON.stringify(WEBHOOK_VERIFY_TOKEN));
-
-// Numéro qui reçoit les notifications de nouvelles commandes (toi)
-const OWNER_PHONE_NUMBER = "212704282919";
-
-// Fichier où les commandes sont sauvegardées
-const ORDERS_FILE = "./commandes.json";
-
-// Historique de conversation en mémoire (par numéro de téléphone)
-// ⚠️ En mémoire = perdu au redémarrage du serveur. On branchera une vraie base
-// de données (SQLite/Postgres) à l'étape suivante.
 const conversations = new Map();
+const entrepriseCache = new Map();
 
-// Prompt système : définit le rôle et le ton de l'agent.
-const SYSTEM_PROMPT = `Tu es l'assistant WhatsApp de Saada Style, une boutique de vêtements et mode.
+async function getEntrepriseByPhoneNumberId(phoneNumberId) {
+  if (entrepriseCache.has(phoneNumberId)) {
+    return entrepriseCache.get(phoneNumberId);
+  }
+
+  const result = await query(
+    "SELECT * FROM entreprises WHERE phone_number_id = $1 AND actif = true",
+    [phoneNumberId]
+  );
+
+  if (result.rows.length === 0) return null;
+
+  const entreprise = result.rows[0];
+
+  const produitsResult = await query(
+    "SELECT * FROM produits WHERE entreprise_id = $1 AND disponible = true",
+    [entreprise.id]
+  );
+  entreprise.produits = produitsResult.rows;
+
+  entrepriseCache.set(phoneNumberId, entreprise);
+  setTimeout(() => entrepriseCache.delete(phoneNumberId), 5 * 60 * 1000);
+
+  return entreprise;
+}
+
+function buildSystemPrompt(entreprise) {
+  const produitsListe = entreprise.produits
+    .map(
+      (p) =>
+        `- ${p.nom} : ${p.description || ""} | Tailles : ${(p.tailles || []).join(", ") || "N/A"} | Couleurs : ${(p.couleurs || []).join(", ") || "N/A"} | Prix : ${p.prix} DH | Disponible`
+    )
+    .join("\n");
+
+  const champsRequis = entreprise.champs_commande_requis.join(", ");
+  const jsonTemplate = entreprise.champs_commande_requis
+    .map((champ) => `"${champ}":"..."`)
+    .join(",");
+
+  return `Tu es l'assistant WhatsApp de ${entreprise.nom_entreprise}, une entreprise de ${entreprise.secteur || "commerce"}.
+
+Informations générales :
+${entreprise.informations_generales || "Aucune information supplémentaire."}
+
+Informations de livraison :
+${entreprise.infos_livraison || "Non précisé."}
+
+Catalogue produits disponible :
+${produitsListe || "Aucun produit enregistré pour l'instant."}
 
 Langue :
-- Réponds toujours dans la même langue que celle utilisée par le client (français ou arabe/darija).
-- Si le client écrit en arabe (lettres arabes ou darija transcrite en lettres latines), réponds dans le même style.
-- Si le message mélange les deux langues, réponds dans la langue dominante du message.
+- Réponds toujours dans la même langue que celle utilisée par le client (${entreprise.langues.join(" ou ")}).
 
 Ton rôle :
-- Répondre aux questions sur les produits (tailles, couleurs, matières, prix, disponibilité)
-- Aider les clients à passer commande (récupère : article souhaité, taille, couleur, quantité, nom complet, adresse de livraison, numéro de téléphone)
-- Informer sur les délais et modes de livraison si demandé
+- Répondre aux questions sur les produits du catalogue ci-dessus uniquement — n'invente jamais de produit hors catalogue.
+- Aider les clients à passer commande en récupérant ces informations : ${champsRequis}.
 
-Ton ton : professionnel, direct et efficace. Pas de familiarité excessive, mais reste courtois.
+Ton ton : ${entreprise.ton}.
 
 Règles strictes :
-- Si tu ne connais pas une information précise (stock exact, prix exact), dis-le clairement et propose de transférer la demande à un membre de l'équipe.
-- Ne jamais inventer de prix, de délais ou de disponibilité.
-- Dès que tu as récupéré TOUTES ces informations pour une commande : article, taille, couleur, quantité, nom complet, adresse de livraison, numéro de téléphone :
-  1. Récapitule la commande clairement au client et confirme qu'elle a bien été transmise à l'équipe.
-  2. Termine ta réponse par cette ligne exacte sur une nouvelle ligne (elle ne sera jamais vue par le client, c'est un marqueur technique) :
-  [COMMANDE_COMPLETE]{"article":"...","taille":"...","couleur":"...","quantite":"...","nom":"...","adresse":"...","telephone":"..."}
-- N'utilise ce marqueur JAMAIS avant d'avoir toutes les informations. Pose des questions une par une s'il en manque.
-- Reste concis : des réponses courtes et claires, adaptées à WhatsApp.`;
+- Si un produit demandé n'est pas dans le catalogue, dis-le clairement.
+- Ne jamais inventer de prix, délais ou disponibilité.
+- Dès que tu as récupéré TOUTES les informations requises (${champsRequis}) :
+  1. Récapitule la commande et confirme qu'elle est transmise à l'équipe.
+  2. Termine ta réponse par cette ligne exacte (marqueur technique invisible pour le client) :
+  [COMMANDE_COMPLETE]{${jsonTemplate}}
+- N'utilise ce marqueur JAMAIS avant d'avoir toutes les informations.
+- Reste concis, adapté à WhatsApp.`;
+}
 
-/**
- * ÉTAPE A — Vérification du webhook par Meta (une seule fois, à la config)
- */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -69,9 +96,6 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-/**
- * ÉTAPE B — Réception des messages entrants WhatsApp
- */
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -79,43 +103,93 @@ app.post("/webhook", async (req, res) => {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
+    const phoneNumberId = change?.value?.metadata?.phone_number_id;
 
-    if (!message) return;
+    if (!message || !phoneNumberId) return;
 
-    const from = message.from;
-    const userText = message.text?.body;
-
-    if (!userText) {
-      console.log("Message reçu sans texte (image, audio...) - non géré pour l'instant");
+    const entreprise = await getEntrepriseByPhoneNumberId(phoneNumberId);
+    if (!entreprise) {
+      console.error(`❌ Aucune entreprise trouvée pour phone_number_id ${phoneNumberId}`);
       return;
     }
 
-    console.log(`📩 Message de ${from} : ${userText}`);
+    const from = message.from;
+    let userText = message.text?.body;
 
-    const rawReply = await askGroq(from, userText);
+    if (!userText && message.type === "audio") {
+      console.log(`🎤 [${entreprise.nom_entreprise}] Message vocal reçu de ${from}, transcription...`);
+      try {
+        userText = await transcribeAudio(entreprise, message.audio.id);
+        console.log(`📝 [${entreprise.nom_entreprise}] Transcription : ${userText}`);
+      } catch (err) {
+        console.error("Erreur de transcription audio :", err);
+        await sendWhatsAppMessage(
+          entreprise,
+          from,
+          "Désolé, je n'ai pas pu comprendre votre message vocal. Pouvez-vous l'écrire en texte ?"
+        );
+        return;
+      }
+    }
 
-    // Détecte si une commande complète a été signalée par l'IA
+    if (!userText) {
+      console.log(`[${entreprise.nom_entreprise}] Message non pris en charge (image, vidéo...), ignoré`);
+      return;
+    }
+
+    console.log(`📩 [${entreprise.nom_entreprise}] Message de ${from} : ${userText}`);
+
+    const rawReply = await askGroq(entreprise, from, userText);
     const { cleanReply, order } = extractOrder(rawReply);
 
-    await sendWhatsAppMessage(from, cleanReply);
+    await sendWhatsAppMessage(entreprise, from, cleanReply);
 
     if (order) {
-      order.client_whatsapp = from;
-      order.date = new Date().toISOString();
-      saveOrder(order);
-      await notifyOwner(order);
+      await saveOrder(entreprise, from, order);
+      await notifyOwner(entreprise, from, order);
     }
   } catch (err) {
     console.error("Erreur lors du traitement du message :", err);
   }
 });
 
-/**
- * Appelle l'API Groq (gratuite) avec l'historique de conversation de l'utilisateur.
- */
-async function askGroq(userId, userText) {
-  const history = conversations.get(userId) || [];
+async function transcribeAudio(entreprise, mediaId) {
+  const mediaInfoRes = await fetch(`https://graph.facebook.com/v25.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${entreprise.whatsapp_token}` },
+  });
+  const mediaInfo = await mediaInfoRes.json();
+  if (!mediaInfo.url) throw new Error("Impossible de récupérer l'URL du média audio");
+
+  const audioRes = await fetch(mediaInfo.url, {
+    headers: { Authorization: `Bearer ${entreprise.whatsapp_token}` },
+  });
+  const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+  const form = new FormData();
+  form.append("file", audioBuffer, { filename: "audio.ogg", contentType: "audio/ogg" });
+  form.append("model", "whisper-large-v3");
+
+  const transcRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+      ...form.getHeaders(),
+    },
+    body: form,
+  });
+
+  const transcData = await transcRes.json();
+  if (!transcData.text) throw new Error("Transcription vide ou échouée");
+
+  return transcData.text;
+}
+
+async function askGroq(entreprise, userId, userText) {
+  const convKey = `${entreprise.id}:${userId}`;
+  const history = conversations.get(convKey) || [];
   history.push({ role: "user", content: userText });
+
+  const systemPrompt = buildSystemPrompt(entreprise);
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -126,7 +200,7 @@ async function askGroq(userId, userText) {
     body: JSON.stringify({
       model: "llama-3.3-70b-versatile",
       max_tokens: 500,
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+      messages: [{ role: "system", content: systemPrompt }, ...history],
     }),
   });
 
@@ -136,23 +210,16 @@ async function askGroq(userId, userText) {
     "Désolé, je n'ai pas pu générer de réponse.";
 
   history.push({ role: "assistant", content: replyText });
-  conversations.set(userId, history.slice(-20));
+  conversations.set(convKey, history.slice(-20));
 
   return replyText;
 }
 
-/**
- * Extrait le marqueur [COMMANDE_COMPLETE]{...} de la réponse de l'IA,
- * s'il est présent, et retourne le texte nettoyé (sans le marqueur, invisible pour le client)
- * ainsi que les données de la commande si trouvées.
- */
 function extractOrder(reply) {
   const marker = "[COMMANDE_COMPLETE]";
   const index = reply.indexOf(marker);
 
-  if (index === -1) {
-    return { cleanReply: reply, order: null };
-  }
+  if (index === -1) return { cleanReply: reply, order: null };
 
   const cleanReply = reply.slice(0, index).trim();
   const jsonPart = reply.slice(index + marker.length).trim();
@@ -166,54 +233,32 @@ function extractOrder(reply) {
   }
 }
 
-/**
- * Sauvegarde une commande dans le fichier commandes.json
- */
-function saveOrder(order) {
-  let orders = [];
-  if (fs.existsSync(ORDERS_FILE)) {
-    try {
-      orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8"));
-    } catch (err) {
-      console.error("Erreur lecture commandes.json :", err);
-    }
-  }
-  orders.push(order);
-  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
-  console.log("💾 Commande sauvegardée dans commandes.json");
+async function saveOrder(entreprise, clientWhatsapp, order) {
+  await query(
+    "INSERT INTO commandes (entreprise_id, client_whatsapp, details) VALUES ($1, $2, $3)",
+    [entreprise.id, clientWhatsapp, JSON.stringify(order)]
+  );
+  console.log(`💾 [${entreprise.nom_entreprise}] Commande sauvegardée en base`);
 }
 
-/**
- * Envoie une notification WhatsApp au propriétaire (toi) pour chaque nouvelle commande.
- */
-async function notifyOwner(order) {
-  const message = `🛍️ Nouvelle commande reçue !
+async function notifyOwner(entreprise, clientWhatsapp, order) {
+  const details = Object.entries(order)
+    .map(([key, value]) => `${key} : ${value}`)
+    .join("\n");
 
-Article : ${order.article}
-Taille : ${order.taille}
-Couleur : ${order.couleur}
-Quantité : ${order.quantite}
+  const message = `🛍️ Nouvelle commande — ${entreprise.nom_entreprise} !\n\n${details}\n\nClient WhatsApp : ${clientWhatsapp}`;
 
-Client : ${order.nom}
-Téléphone : ${order.telephone}
-Adresse : ${order.adresse}
-
-WhatsApp client : ${order.client_whatsapp}`;
-
-  await sendWhatsAppMessage(OWNER_PHONE_NUMBER, message);
-  console.log(`🔔 Notification de commande envoyée à ${OWNER_PHONE_NUMBER}`);
+  await sendWhatsAppMessage(entreprise, entreprise.numero_notification, message);
+  console.log(`🔔 [${entreprise.nom_entreprise}] Notification envoyée à ${entreprise.numero_notification}`);
 }
 
-/**
- * Envoie un message texte via l'API WhatsApp Cloud.
- */
-async function sendWhatsAppMessage(to, text) {
-  const url = `https://graph.facebook.com/v25.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+async function sendWhatsAppMessage(entreprise, to, text) {
+  const url = `https://graph.facebook.com/v25.0/${entreprise.phone_number_id}/messages`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      Authorization: `Bearer ${entreprise.whatsapp_token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -226,14 +271,14 @@ async function sendWhatsAppMessage(to, text) {
 
   const data = await response.json();
   if (data.error) {
-    console.error("Erreur envoi WhatsApp :", data.error);
+    console.error(`Erreur envoi WhatsApp [${entreprise.nom_entreprise}] :`, data.error);
   } else {
-    console.log(`✅ Réponse envoyée à ${to}`);
+    console.log(`✅ [${entreprise.nom_entreprise}] Réponse envoyée à ${to}`);
   }
 }
 
 app.get("/", (req, res) => {
-  res.send("Agent IA WhatsApp — serveur actif ✅");
+  res.send("Agent IA WhatsApp multi-entreprises — serveur actif ✅");
 });
 
 app.listen(PORT, () => {

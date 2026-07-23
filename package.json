@@ -1,16 +1,19 @@
 {
   "name": "whatsapp-agent-ia",
-  "version": "1.0.0",
-  "description": "Agent IA WhatsApp - webhook + Claude API",
+  "version": "2.0.0",
+  "description": "Agent IA WhatsApp multi-entreprises - webhook + Groq + PostgreSQL",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "add-business": "node add-business.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "dotenv": "^16.4.5",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "pg": "^8.12.0",
+    "form-data": "^4.0.0"
   }
 }

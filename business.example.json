@@ -1,0 +1,30 @@
+{
+  "phone_number_id": "1215563414980514",
+  "whatsapp_token": "COLLE_ICI_LE_TOKEN_WHATSAPP_DE_CETTE_ENTREPRISE",
+  "nom_entreprise": "Saada Style",
+  "secteur": "Vêtements et mode",
+  "ton": "professionnel et direct",
+  "langues": ["français", "arabe/darija"],
+  "infos_livraison": "Livraison 2-3 jours partout au Maroc, 30 DH. Gratuite dès 500 DH d'achat.",
+  "informations_generales": "Boutique de vêtements pour homme et femme, basée à Rabat. Ouvert du lundi au samedi, 9h-19h.",
+  "numero_notification": "212704282999",
+  "champs_commande_requis": ["article", "taille", "couleur", "quantite", "nom", "adresse", "telephone"],
+  "produits": [
+    {
+      "nom": "Robe été rouge",
+      "description": "Robe légère en coton, idéale pour l'été",
+      "tailles": ["S", "M", "L"],
+      "couleurs": ["Rouge", "Bleu"],
+      "prix": 250,
+      "disponible": true
+    },
+    {
+      "nom": "Chemise homme blanche",
+      "description": "Chemise classique en lin",
+      "tailles": ["M", "L", "XL"],
+      "couleurs": ["Blanc"],
+      "prix": 180,
+      "disponible": true
+    }
+  ]
+}

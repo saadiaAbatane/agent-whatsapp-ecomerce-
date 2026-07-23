@@ -16,6 +16,8 @@ const {
   PORT = 3000,
 } = process.env;
 
+console.log("🔍 DEBUG - Token attendu:", JSON.stringify(WEBHOOK_VERIFY_TOKEN));
+
 // Numéro qui reçoit les notifications de nouvelles commandes (toi)
 const OWNER_PHONE_NUMBER = "212704282919";
 
